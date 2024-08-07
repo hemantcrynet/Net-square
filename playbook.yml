@@ -1,0 +1,141 @@
+
+
+# Setting Up the Playbook
+
+---
+- name: Setup environment and deploy application
+  hosts: all
+  become: yes
+  vars:
+    app_port: 5000
+    deployment_folder: "/opt/example"
+    wheel_file: "Example-1.1.2-py3-none-any.whl"
+    instance_path: "{{deployment_folder}}/instance"
+    secret_key: 
+      - name: include vault
+        ansible.builtin.include_var:
+         file: "{{deployment_folder}}/vault.yml"
+    db_path: "postgresql://example_user:myVerySecretDatabasePassword@localhost:5432/example_db"
+    admin_groups:
+      - "Read-only"
+      - "Read-write"
+      - "Super"
+
+
+
+# Installing Standard CA Certificates
+
+- name: Ensure system trusts standard CA certificates
+  apt:
+    name: ca-certificates
+    state: present
+
+
+
+
+# Installing Custom CA Certificates
+
+  - name: Copy custom CA certificates
+    copy:
+      src: "{{ item }}"
+      dest: "/usr/local/share/ca-certificates/"
+    loop:
+      - "{{ deployment_folder }}/CA1.crt"
+      - "{{ deployment_folder }}/CA2.crt"
+      - "{{ deployment_folder }}/CA3.crt"
+    notify:
+      - update-ca-trust
+
+handlers:
+  - name: update-ca-trust
+    command: update-ca-trust
+
+
+
+
+# Validate Custom CA Certificate
+
+
+- name: Validate Custom CA Certificate
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+    - name: Check if custom CA certificate exists
+      ansible.builtin.stat:
+        path: /etc/ssl/certs/custom_ca.crt
+      register: cert_stat
+
+    - name: Fail if custom CA certificate does not exist
+      ansible.builtin.fail:
+        msg: "Custom CA certificate not found at /etc/ssl/certs/custom_ca.crt"
+      when: not cert_stat.stat.exists
+
+    - name: Get certificate details
+      ansible.builtin.command:
+        cmd: openssl x509 -noout -text -in /etc/ssl/certs/custom_ca.crt
+      register: cert_details
+      changed_when: false
+
+    - name: Fail if certificate is expired
+      ansible.builtin.fail:
+        msg: "Custom CA certificate is expired"
+      when: "'notAfter' not in cert_details.stdout"
+
+    - name: Display certificate details
+      ansible.builtin.debug:
+        var: cert_details.stdout
+
+
+
+
+# Deploying the Python Flask Application
+
+- name: Install Python and pip
+  apt:
+    name: python3, python3-pip
+    state: present
+
+- name: Create virtual environment
+  ansible.builtin.command: python3 -m venv "{{ deployment_folder }}/venv"
+
+- name: Activate virtual environment
+  ansible.builtin.shell: source "{{ deployment_folder }}/venv/bin/activate"
+
+- name: Install Flask application
+  ansible.builtin.pip:
+    name: "{{ wheel_file }}"
+    virtualenv: "{{ deployment_folder }}/venv"
+    state: present
+
+
+
+
+
+# Configuring the Application
+
+- name: Copy run.sh script
+  copy:
+    src: "{{ deployment_folder }}/run.sh"
+    dest: "{{ deployment_folder }}"
+    mode: '0755'
+
+- name: Copy config.py file
+  copy:
+    src: "{{ instance_path }}/config.py"
+    dest: "{{ instance_path }}"
+    mode: '0644'
+
+
+
+
+
+# - name: Ensure application is running
+  systemd:
+    name: example
+    description: Example Flask Application
+    enabled: yes
+    state: started
+    script: "{{ deployment_folder }}/run.sh"
+    environment:
+      INSTANCE_PATH: "{{ instance_path }}"
